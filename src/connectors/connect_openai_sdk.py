@@ -12,6 +12,14 @@ token_provider = get_bearer_token_provider(
 )
 
 openai_client = OpenAI(  
-  base_url = "https://{resource-name}.openai.azure.com/openai/v1/",  
-  api_key=token_provider,
+  base_url = os.getenv("AZURE_OPENAI_BASE_URL"),  
+  api_key=token_provider(),
 )
+
+try:
+    models = openai_client.models.list()
+    print("Connection successful. Available models:")
+    for m in models:
+        print("-", m.id)
+except Exception as e:
+    print("Connection failed:", e)

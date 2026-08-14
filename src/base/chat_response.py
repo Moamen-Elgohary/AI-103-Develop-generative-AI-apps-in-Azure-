@@ -18,16 +18,14 @@ def main():
 
         openai_client = OpenAI(
             base_url=azure_openai_endpoint,
-            api_key=token_provider
+            api_key=token_provider()
         )
 
-        # Generate a simple response
         response = openai_client.responses.create(
             model=model_deployment,
             input="What is Microsoft Foundry?"
         )
 
-        # Display the response
         print(f"Response: {response.output_text}")
         print(f"Response ID: {response.id}")
         print(f"Tokens used: {response.usage.total_tokens}")
