@@ -26,6 +26,10 @@ def get_embedding_function():
         model_name=EMBEDDING_MODEL_NAME
     )
 
+def embed_text(text):
+    embedding_fn = get_embedding_function()
+    return embedding_fn([text])[0]
+
 
 def get_collection():
     client = chromadb.PersistentClient(path=str(CHROMA_PATH))
@@ -39,8 +43,12 @@ def get_llm_client(base_url):
     return OpenAI(base_url=base_url, api_key="ollama")
 
 
-def retrieve_chunks(collection, question, n_results=TOP_K):
-    results = collection.query(query_texts=[question], n_results=n_results)
+def retrieve_chunks(collection, question, n_results=TOP_K, query_embedding=None):
+    if query_embedding is not None:
+        results = collection.query(query_embeddings=[query_embedding], n_results=n_results)
+    else:
+        results = collection.query(query_texts=[question], n_results=n_results)
+ 
     docs = results.get("documents", [[]])[0]
     metas = results.get("metadatas", [[]])[0]
     distances = results.get("distances", [[]])[0]
@@ -53,3 +61,13 @@ def build_context(chunks):
         section = meta.get("section", "unknown")
         parts.append(f"[{source} - {section}]\n{doc}")
     return "\n\n".join(parts)
+
+def generate_hypothetical_answer(question, client, model, system_prompt):
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ],
+    )
+    return response.choices[0].message.content

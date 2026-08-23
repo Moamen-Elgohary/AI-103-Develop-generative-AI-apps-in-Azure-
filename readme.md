@@ -29,7 +29,7 @@ Ask it things like:
 - Basic styled HTML/JS frontend
 - No memory, no web search — just "ask your docs"
 
-### v2 — HyDE retrieval
+### v2 — HyDE retrieval — ✅ Completed
 - LLM generates a hypothetical answer to the question first
 - Embed that hypothetical answer (not the raw question) and use it to query Chroma
 - Stays fully local (local LLM + local embeddings)
@@ -80,7 +80,7 @@ A deployed, cloud-hosted RAG chatbot with web search fallback, multi-document su
 
 To avoid over-scoping, v1 cut everything down to the smallest working loop.
 
-### v1 Actual Stack
+### v1 Stack
 - **LLM**: Local model via OpenAI-compatible client (Ollama), using `chat.completions.create`
 - **Embeddings**: Local `sentence-transformers/all-mpnet-base-v2` via Chroma's built-in embedding function
 - **Vector DB**: Chroma (persistent local client)
@@ -105,7 +105,7 @@ To avoid over-scoping, v1 cut everything down to the smallest working loop.
 | `query_db.py` | CLI dev/debug tool — query the Chroma collection directly and inspect retrieved chunks/distances |
 | `index.html` | Frontend — chat UI (input box, bubbles, fetch to `/chat`) |
 
-### v1 Build Steps (Completed)
+### v1 Build Steps
 1. Prepared the two source files (clean markdown/text)
 2. Chunked each file (`MarkdownHeaderTextSplitter`)
 3. Embedded chunks using local `sentence-transformers/all-mpnet-base-v2` and stored in Chroma
@@ -113,3 +113,28 @@ To avoid over-scoping, v1 cut everything down to the smallest working loop.
 5. Built minimal styled HTML/JS frontend: input box, submit button, response display
 6. Added `query_db.py` for local retrieval testing/debugging
 7. Tested end-to-end locally
+
+---
+ 
+## v2 — HyDE Retrieval — Completed
+ 
+**What:** Before embedding the user's question, ask the local LLM to generate a hypothetical (made-up) answer. Embed that hypothetical answer instead of the raw question, then use it to query Chroma. Hypothetical answers resemble real document chunks more closely than bare questions do, improving retrieval match quality.
+ 
+### v2 Stack, Source files
+- Same as v1 — no new dependencies
+
+### v2 Files
+ 
+| File | Purpose |
+|---|---|
+| `utils.py` | Modified — added `generate_hypothetical_answer()` and `embed_text()`; `retrieve_chunks()` now accepts an optional `query_embedding` param |
+| `main.py` | Modified — defines `HYDE_SYSTEM_PROMPT`; `/chat` now generates a hypothetical answer, embeds it, and retrieves with that embedding before the final LLM call |
+| `query_db.py` | Modified — defines `HYDE_SYSTEM_PROMPT`; added `--hyde` CLI flag to compare HyDE vs raw-query retrieval |
+ 
+### v2 Build Steps
+1. Added `generate_hypothetical_answer(question, client, model, system_prompt)` to `utils.py` — LLM generates a hypothetical answer from the user's question
+2. Added `embed_text(text)` to `utils.py` — embeds arbitrary text using the same local embedding function (`all-mpnet-base-v2`)
+3. Modified `retrieve_chunks()` in `utils.py` to accept an optional `query_embedding` — uses it via `collection.query(query_embeddings=...)` if provided, falls back to raw-question `query_texts` otherwise (backward compatible)
+4. Updated `/chat` in `main.py`: question → HyDE generation → embed → retrieve → build context → final LLM call
+5. Added `--hyde` flag to `query_db.py` to test HyDE vs raw-query retrieval side-by-side, printing the mode and hypothetical answer used
+6. Tested end-to-end: `query_db.py --hyde` vs `query_db.py` for retrieval comparison, and full `/chat` flow via `uvicorn main:app --reload`

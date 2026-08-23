@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from utils import (
     APP_DIR,
     build_context,
+    embed_text,
+    generate_hypothetical_answer,
     get_collection,
     get_llm_client,
     retrieve_chunks,
@@ -25,6 +27,14 @@ SYSTEM_PROMPT = (
     "answer, say you don't have that information — do not make anything up."
 )
 
+HYDE_SYSTEM_PROMPT = (
+    "You are a florist expert. Write a short, plausible-sounding answer to "
+    "the user's question, as if it came from a florist knowledge base. "
+    "Do not say you don't know — just write your best guess answer in a few "
+    "sentences. This will be used to help find real information, so focus on "
+    "sounding like a real answer, not on being correct."
+)
+
 app = FastAPI()
 
 
@@ -35,10 +45,18 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 def chat(request: ChatRequest):
     collection = get_collection()
-    chunks = retrieve_chunks(collection, request.question)
+    client = get_llm_client(LOCAL_LLM_BASE_URL)
+
+    hypothetical_answer = generate_hypothetical_answer(
+        request.question, client, LOCAL_LLM_MODEL, HYDE_SYSTEM_PROMPT
+    )
+    query_embedding = embed_text(hypothetical_answer)
+
+    chunks = retrieve_chunks(
+        collection, request.question, query_embedding=query_embedding
+    )
     context = build_context(chunks)
 
-    client = get_llm_client(LOCAL_LLM_BASE_URL)
     response = client.chat.completions.create(
         model=LOCAL_LLM_MODEL,
         messages=[
