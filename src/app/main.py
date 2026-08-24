@@ -1,4 +1,6 @@
 import os
+import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -35,7 +37,14 @@ HYDE_SYSTEM_PROMPT = (
     "sounding like a real answer, not on being correct."
 )
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(asyncio.to_thread(get_collection))
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 class ChatRequest(BaseModel):

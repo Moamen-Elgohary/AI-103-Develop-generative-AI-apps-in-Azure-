@@ -21,23 +21,35 @@ EMBEDDING_MODEL_NAME = os.environ.get(
 LOCAL_LLM_BASE_URL = os.environ.get("LOCAL_LLM_BASE_URL")
 LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL")
 
+
+_embedding_fn = None
+_collection = None
+ 
+ 
 def get_embedding_function():
-    return embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBEDDING_MODEL_NAME
-    )
+    global _embedding_fn
+    if _embedding_fn is None:
+        _embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=EMBEDDING_MODEL_NAME
+        )
+    return _embedding_fn
+
 
 def embed_text(text):
     embedding_fn = get_embedding_function()
-    return embedding_fn([text])[0]
+    return embedding_fn([text])[0] 
 
-
+ 
 def get_collection():
-    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-    return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        embedding_function=get_embedding_function(),
-    )
-
+    global _collection
+    if _collection is None:
+        client = chromadb.PersistentClient(path=str(CHROMA_PATH))
+        _collection = client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            embedding_function=get_embedding_function(),
+        )
+    return _collection
+ 
 
 def get_llm_client(base_url):
     return OpenAI(base_url=base_url, api_key="ollama")
@@ -54,6 +66,7 @@ def retrieve_chunks(collection, question, n_results=TOP_K, query_embedding=None)
     distances = results.get("distances", [[]])[0]
     return list(zip(docs, metas, distances))
 
+
 def build_context(chunks):
     parts = []
     for doc, meta, _ in chunks:
@@ -61,6 +74,7 @@ def build_context(chunks):
         section = meta.get("section", "unknown")
         parts.append(f"[{source} - {section}]\n{doc}")
     return "\n\n".join(parts)
+
 
 def generate_hypothetical_answer(question, client, model, system_prompt):
     response = client.chat.completions.create(
