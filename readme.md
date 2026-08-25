@@ -138,3 +138,35 @@ To avoid over-scoping, v1 cut everything down to the smallest working loop.
 4. Updated `/chat` in `main.py`: question → HyDE generation → embed → retrieve → build context → final LLM call
 5. Added `--hyde` flag to `query_db.py` to test HyDE vs raw-query retrieval side-by-side, printing the mode and hypothetical answer used
 6. Tested end-to-end: `query_db.py --hyde` vs `query_db.py` for retrieval comparison, and full `/chat` flow via `uvicorn main:app --reload`
+
+---
+ 
+## v3 — Reranking — Completed
+ 
+**What:** HyDE (v2) retrieves a candidate set using an embedding of a hypothetical prose answer, which can bias against short/structured content and doesn't always surface the most relevant chunks in the right order. Reranking adds a second pass: retrieve a wider candidate pool from Chroma, then use a cross-encoder to score each candidate directly against the raw question and reorder by true relevance before building context.
+ 
+**Ties into v2** widening the initial top-k and reranking against the raw question (not the HyDE embedding) helps recover relevant chunks — including structured/CSV rows, if added later — that HyDE's prose bias may have ranked lower. Reranking fixes ordering/precision within the retrieved pool; it can't recover chunks HyDE excluded entirely, so top-k width still matters.
+ 
+### v3 Planned Stack
+- Same as v2 — one new dependency: a local cross-encoder reranker (e.g. `cross-encoder/ms-marco-MiniLM-L-6-v2` via `sentence-transformers`, likely already available as it's part of the `sentence-transformers` package)
+- **LLM**: Local model via Ollama (unchanged)
+- **Embeddings**: Local `sentence-transformers/all-mpnet-base-v2` (unchanged)
+- **Reranker**: Local cross-encoder (new)
+- **Vector DB**: Chroma (unchanged)
+
+### v3 Files (Planned)
+ 
+| File | Purpose |
+|---|---|
+| `utils.py` | Modified — add `get_reranker()` (lazy-load-with-cache, same pattern as embedding model) and `rerank_chunks(question, chunks, top_n)` |
+| `main.py` | Modified — `lifespan` background-loads reranker alongside embedding model; `/chat` retrieves a wider candidate pool, reranks, then builds context from top reranked chunks |
+| `query_db.py` | Modified — add `--rerank` flag to compare raw vs HyDE vs HyDE+rerank retrieval side-by-side |
+ 
+### v3 Build Steps (Planned)
+1. Add `get_reranker()` to `utils.py` — lazy-load a local cross-encoder model, cached after first load (same pattern as `get_embedding_function()`)
+2. Add `rerank_chunks(question, chunks, top_n)` to `utils.py` — scores each (question, chunk) pair with the cross-encoder, sorts descending, returns top `top_n`
+3. Widen initial retrieval: increase `n_results` in the `retrieve_chunks()` call (e.g. top_k=10 candidates) before reranking down to a smaller final set (e.g. top 3)
+4. Update `lifespan` in `main.py` to also background-load the reranker at startup (alongside the embedding model)
+5. Update `/chat` in `main.py`: HyDE-embed → retrieve wide candidate pool → rerank with raw question → build context from top reranked chunks → final LLM call
+6. Add `--rerank` flag to `query_db.py` to compare raw / HyDE / HyDE+rerank retrieval side-by-side
+7. Test retrieval quality: check whether reranking recovers relevant chunks that HyDE's prose bias ranked lower

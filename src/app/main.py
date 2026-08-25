@@ -8,14 +8,18 @@ from pydantic import BaseModel
 
 from utils import (
     APP_DIR,
+    RERANK_CANDIDATES,
+    TOP_K,
     build_context,
     embed_text,
     generate_hypothetical_answer,
     get_collection,
     get_llm_client,
+    get_reranker,
+    rerank_chunks,
     retrieve_chunks,
 )
-
+ 
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -41,6 +45,7 @@ HYDE_SYSTEM_PROMPT = (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(asyncio.to_thread(get_collection))
+    asyncio.create_task(asyncio.to_thread(get_reranker))
     yield
 
 
@@ -55,17 +60,22 @@ class ChatRequest(BaseModel):
 def chat(request: ChatRequest):
     collection = get_collection()
     client = get_llm_client(LOCAL_LLM_BASE_URL)
-
+ 
     hypothetical_answer = generate_hypothetical_answer(
         request.question, client, LOCAL_LLM_MODEL, HYDE_SYSTEM_PROMPT
     )
     query_embedding = embed_text(hypothetical_answer)
-
-    chunks = retrieve_chunks(
-        collection, request.question, query_embedding=query_embedding
+ 
+    candidates = retrieve_chunks(
+        collection,
+        request.question,
+        n_results=RERANK_CANDIDATES,
+        query_embedding=query_embedding,
     )
-    context = build_context(chunks)
 
+    chunks = rerank_chunks(request.question, candidates, top_n=TOP_K)
+    context = build_context(chunks)
+ 
     response = client.chat.completions.create(
         model=LOCAL_LLM_MODEL,
         messages=[
@@ -76,13 +86,13 @@ def chat(request: ChatRequest):
             },
         ],
     )
-
+ 
     answer = response.choices[0].message.content
     sources = [
         {"source": meta.get("source"), "section": meta.get("section")}
         for _, meta, _ in chunks
     ]
-
+ 
     return {"answer": answer, "sources": sources}
 
 
