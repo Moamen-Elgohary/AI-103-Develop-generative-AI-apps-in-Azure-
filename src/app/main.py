@@ -69,9 +69,13 @@ def chat(request: ChatRequest):
 
     session_id = request.session_id or str(uuid.uuid4())
 
+    history = get_session_history(session_id)
+    hyde_history = history[-4:]
+
     hypothetical_answer = generate_hypothetical_answer(
-        request.question, client, LOCAL_LLM_MODEL, HYDE_SYSTEM_PROMPT
+        request.question, client, LOCAL_LLM_MODEL, HYDE_SYSTEM_PROMPT, history=hyde_history
     )
+
     query_embedding = embed_text(hypothetical_answer)
  
     candidates = retrieve_chunks(
@@ -83,8 +87,6 @@ def chat(request: ChatRequest):
 
     chunks = rerank_chunks(request.question, candidates, top_n=TOP_K)
     context = build_context(chunks)
-
-    history = get_session_history(session_id)
 
     messages = (
         [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -103,6 +105,7 @@ def chat(request: ChatRequest):
     )
  
     answer = response.choices[0].message.content
+
     sources = [
         {"source": meta.get("source"), "section": meta.get("section")}
         for _, meta, _ in chunks

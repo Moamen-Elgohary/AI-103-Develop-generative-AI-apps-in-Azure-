@@ -91,13 +91,16 @@ def build_context(chunks):
     return "\n\n".join(parts)
 
 
-def generate_hypothetical_answer(question, client, model, system_prompt):
+def generate_hypothetical_answer(question, client, model, system_prompt, history=None):
+    messages = [{"role": "system", "content": system_prompt}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": question})
+
     response = client.chat.completions.create(
         model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question},
-        ],
+        messages=messages,
+        temperature=0,
     )
     return response.choices[0].message.content
 
