@@ -40,7 +40,7 @@ Ask it things like:
 - Pass only top reranked chunks to the LLM as context
 - Stays fully local
 
-### v4 — Add memory 
+### v4 — Add memory — ✅ Completed
 - Session-based conversation tracking
 - Multi-turn context in the UI
 - v4.1 — HyDE hypothetical-answer generation considers recent conversation history, not just the latest question
@@ -205,8 +205,7 @@ To avoid over-scoping, v1 cut everything down to the smallest working loop.
 
 ---
 
-## v4.1 — HyDE-Aware History (Planned)
-
+## v4.1 — HyDE-Aware History — Completed
 **Design discussion — should HyDE see prior history?**
 
 The open question was whether `generate_hypothetical_answer()` should only take the latest question, or the question plus recent conversation history.
@@ -217,7 +216,7 @@ The fix isn't to hand HyDE the *entire* session history either. Full history add
 
 **Decision:** `generate_hypothetical_answer()` takes the latest question plus the last 2 turns of history if available (fewer if the session has less). This keeps HyDE grounded on follow-ups without paying for or diluting on irrelevant older context.
 
-### v4.1 Files (Planned)
+### v4.1 Files
 
 | File | Purpose |
 |---|---|
@@ -231,29 +230,36 @@ The fix isn't to hand HyDE the *entire* session history either. Full history add
 
 ---
 
-## v4.2 — History Trimming (Planned)
-
+## v4.2 — History Trimming — Completed
+ 
 **Design discussion — trimming**
-
-The problem: session history has no cap. If someone chats for 50 turns, every `/chat` call sends the *full* history to the LLM — cost and latency creep the longer a conversation runs, even on local Ollama.
-
-**Decision:** summarize-and-drop. Once history exceeds N turns, collapse the older turns into a short LLM-generated summary and keep that summary plus the recent raw turns, instead of sending everything forever. This gives the best context retention of the options considered, at the cost of an extra LLM call and added complexity — arguably overkill for a local Ollama chatbot, but it avoids losing older context entirely the way a hard cutoff would.
-
+ 
+The problem: session history has no cap. If someone chats for many turns, every `/chat` call sends the *full* history to the LLM — cost and latency creep the longer a conversation runs, even on local Ollama.
+ 
+**Decision:** summarize-and-drop. Once `turns` exceeds `HISTORY_TURN_LIMIT`, collapse everything except the last 4 messages (2 user+assistant pairs) into a short LLM-generated summary, and keep that summary plus those last 4 raw turns — instead of sending everything forever.
+ 
 To keep the summary itself from growing unbounded as a long session keeps triggering trims, each trim regenerates the summary from scratch rather than appending to it: the old summary plus the newly-dropped turns are fed into the LLM together and replaced with one fresh summary. This keeps the summary roughly the same size no matter how long the session runs, instead of turning into a summary-of-a-summary-of-a-summary that grows forever.
-
-Trimming only ever removes the *oldest* excess turns from `turns`, never the most recent ones — so v4.1's HyDE lookup (last 2 turns) always reads from the untrimmed recent tail and is unaffected by trimming.
-
-### v4.2 Files (Planned)
-
+ 
+`append_to_session()` appends a single message (role + content) to the session's `turns` list. A separate `trim_session()` function is called once per turn, from `main.py`, only after *both* the user question and assistant answer have been appended. It checks whether `turns` has exceeded `HISTORY_TURN_LIMIT`, and only when that's true does it make a summarization LLM call — most turns don't trigger it at all, and trimming only ever happens at a pair boundary.
+ 
+Trimming always keeps the last 4 messages (2 full turns) untouched, since v4.1's HyDE lookup reads from that same tail — this guarantees HyDE's lookback window is never affected by trimming.
+ 
+**Hallucination fix:** early testing showed the summarization call could invent details (names, settings, events) not present in the actual conversation, and — since each trim re-feeds the previous summary back in — a hallucination could persist and compound across trims. Fixed by setting `temperature=0` and `max_tokens=250` on the summarization call, and tightening `SUMMARIZE_SYSTEM_PROMPT` to explicitly forbid including anything not explicitly stated in the source turns.
+ 
+### v4.2 Files
+ 
 | File | Purpose |
 |---|---|
-| `utils.py` | Modified — add `HISTORY_TURN_LIMIT` constant and `summarize_history()`; session storage shape changes to `{"summary": str | None, "turns": [...]}`; `append_to_session()` triggers a trim when `turns` exceeds the limit; `get_session_history()` prepends the summary as a system message when one exists |
-| `main.py` | No changes — trimming is internal to `utils.py`'s session helpers |
-
-### v4.2 Build Steps (Planned)
-1. Add `HISTORY_TURN_LIMIT` constant and a summarization system prompt to `utils.py`
+| `utils.py` | Modified — add `HISTORY_TURN_LIMIT` constant; add `summarize_history(old_summary, dropped_turns, client, model, system_prompt)` (`temperature=0`, `max_tokens=250`); session storage shape changes to `{"summary": str \| None, "turns": [...]}`; `append_to_session()` appends a message to `turns`; new `trim_session(session_id, client, model, summarize_system_prompt, keep_last=4)` checks the limit and, if exceeded, summarizes everything except the last `keep_last` messages; `get_session_history()` prepends the summary as a system message when one exists |
+| `main.py` | Modified — defines `SUMMARIZE_SYSTEM_PROMPT` (alongside `SYSTEM_PROMPT`/`HYDE_SYSTEM_PROMPT`, explicitly forbids inventing details); calls `trim_session()` once per turn, right after both `append_to_session()` calls |
+ 
+### v4.2 Build Steps
+1. Add `HISTORY_TURN_LIMIT` constant to `utils.py`; add `SUMMARIZE_SYSTEM_PROMPT` to `main.py` (kept alongside the other prompts for consistency)
 2. Change session storage shape to `{"summary": None, "turns": []}` per session
-3. Add `summarize_history(old_summary, dropped_turns, client, model, system_prompt)` to `utils.py` — feeds the old summary (if any) plus newly-dropped turns into the LLM, returns one fresh summary
-4. Update `append_to_session()` — after appending, if `len(turns) > HISTORY_TURN_LIMIT`, pull the oldest excess turns, call `summarize_history()`, replace `summary`, drop those turns from `turns`
-5. Update `get_session_history()` — return `[{"role": "system", "content": f"Earlier conversation summary: {summary}"}] + turns` when a summary exists, else just `turns`
-6. Test: chat past the turn limit, confirm older turns get summarized and dropped while recent turns and the summary are still passed to the LLM
+3. Add `summarize_history(old_summary, dropped_turns, client, model, system_prompt)` to `utils.py` — feeds the old summary (if any) plus newly-dropped turns into the LLM with `temperature=0` and `max_tokens=250`, returns one fresh summary
+4. `append_to_session()` in `utils.py` appends a single message (role + content) to the session's `turns` list
+5. Add `trim_session(session_id, client, model, summarize_system_prompt, keep_last=4)` to `utils.py` — if `len(turns) > HISTORY_TURN_LIMIT`, summarizes everything except the last `keep_last` messages, replaces `summary`, keeps only the last `keep_last` in `turns`
+6. Update `get_session_history()` — return `[{"role": "system", "content": f"Earlier conversation summary: {summary}"}] + turns` when a summary exists, else just `turns`
+7. Call `trim_session()` in `main.py`, once per turn, immediately after both `append_to_session()` calls (user question + assistant answer) — guarantees trimming only ever happens at a pair boundary
+8. Tighten `SUMMARIZE_SYSTEM_PROMPT` to forbid inventing facts/names/events not explicitly present in the source turns, after observing hallucinated details compounding across trims
+9. Test: chat past the turn limit, confirm older turns get summarized (accurately, no invented details) and dropped while the last 4 raw turns and the summary are still passed to the LLM and to HyDE

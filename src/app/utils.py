@@ -15,6 +15,7 @@ CHROMA_PATH = APP_DIR / "chroma_db"
 COLLECTION_NAME = "flower_pedia"
 TOP_K = 3
 RERANK_CANDIDATES = 10
+HISTORY_TURN_LIMIT = 10
 
 EMBEDDING_MODEL_NAME = os.environ.get(
     "EMBEDDING_MODEL_NAME", "sentence-transformers/all-mpnet-base-v2"
@@ -118,12 +119,50 @@ def rerank_chunks(question, chunks, top_n=TOP_K):
 
 
 def get_session_history(session_id):
-    return SESSIONS.get(session_id, [])
+    session = SESSIONS.get(session_id)
+    if not session:
+        return []
  
+    summary = session.get("summary")
+    turns = session.get("turns", [])
  
-def append_to_session(session_id, role, content):
-    SESSIONS.setdefault(session_id, []).append({"role": role, "content": content})
+    if summary:
+        return [{"role": "system", "content": f"Earlier conversation summary: {summary}"}] + turns
+    return turns
  
+def append_to_session(session_id, role, content, client=None, model=None, summarize_system_prompt=None):
+    session = SESSIONS.setdefault(session_id, {"summary": None, "turns": []})
+    session["turns"].append({"role": role, "content": content})
+
+
+def trim_session(session_id, client, model, summarize_system_prompt, keep_last=4):
+    session = SESSIONS.get(session_id)
+    if not session or len(session["turns"]) <= HISTORY_TURN_LIMIT:
+        return
+ 
+    turns_to_summarize = session["turns"][:-keep_last]
+    session["turns"] = session["turns"][-keep_last:]
+    session["summary"] = summarize_history(
+        session["summary"], turns_to_summarize, client, model, summarize_system_prompt
+    )
+
  
 def clear_session(session_id):
     SESSIONS.pop(session_id, None)
+
+
+def summarize_history(old_summary, dropped_turns, client, model, system_prompt):
+    summary_input = f"Previous summary: {old_summary or 'None'}\n\nNewly dropped turns:\n"
+    for turn in dropped_turns:
+        summary_input += f"{turn['role']}: {turn['content']}\n"
+ 
+    response = client.chat.completions.create(
+    model=model,
+    messages=[
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": summary_input},
+    ],
+    temperature=0,
+    max_tokens=250,
+    )
+    return response.choices[0].message.content

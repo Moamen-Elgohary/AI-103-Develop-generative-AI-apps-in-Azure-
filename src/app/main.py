@@ -23,6 +23,7 @@ from utils import (
     get_session_history,
     rerank_chunks,
     retrieve_chunks,
+    trim_session,
 )
  
 from dotenv import load_dotenv
@@ -44,6 +45,16 @@ HYDE_SYSTEM_PROMPT = (
     "Do not say you don't know — just write your best guess answer in a few "
     "sentences. This will be used to help find real information, so focus on "
     "sounding like a real answer, not on being correct."
+)
+
+SUMMARIZE_SYSTEM_PROMPT = (
+    "You are summarizing a conversation between a user and a florist "
+    "assistant. Given the previous summary (if any) and the newly dropped "
+    "turns, write one short, updated summary that captures only the "
+    "important context needed for future turns. Only include facts, names, "
+    "and events that are explicitly stated in the provided text — never "
+    "invent or assume details that are not present. Keep it concise — a "
+    "few sentences."
 )
 
 
@@ -70,7 +81,7 @@ def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
 
     history = get_session_history(session_id)
-    hyde_history = history[-4:]
+    hyde_history = history[-4:]  # last 2 turns (user+assistant each)
 
     hypothetical_answer = generate_hypothetical_answer(
         request.question, client, LOCAL_LLM_MODEL, HYDE_SYSTEM_PROMPT, history=hyde_history
@@ -86,6 +97,7 @@ def chat(request: ChatRequest):
     )
 
     chunks = rerank_chunks(request.question, candidates, top_n=TOP_K)
+
     context = build_context(chunks)
 
     messages = (
@@ -113,6 +125,8 @@ def chat(request: ChatRequest):
 
     append_to_session(session_id, "user", request.question)
     append_to_session(session_id, "assistant", answer)
+
+    trim_session(session_id, client, LOCAL_LLM_MODEL, SUMMARIZE_SYSTEM_PROMPT)
 
     return {"answer": answer, "sources": sources, "session_id": session_id}
 
