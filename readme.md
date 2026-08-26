@@ -19,7 +19,7 @@ Ask it things like:
 - **Backend**: FastAPI
 - **Frontend**: Basic HTML/CSS/JS (v1), improved later
 
-> **Note:** v1 uses local equivalents for LLM and embeddings, and stays local through HyDE (v2) and reranking (v3) since both are free — see [Roadmap](#roadmap) and [v1 — Core RAG](#v1--core-rag-local-only-completed) for what's actually running today.
+> **Note:** v1 uses local equivalents for LLM and embeddings, and stays local through HyDE (v2) and reranking (v3, both completed) since both are free — see [Roadmap](#roadmap) and [v1 — Core RAG](#v1--core-rag-local-only-completed) for what's actually running today.
 
 ## Roadmap
 
@@ -34,15 +34,17 @@ Ask it things like:
 - Embed that hypothetical answer (not the raw question) and use it to query Chroma
 - Stays fully local (local LLM + local embeddings)
 
-### v3 — Reranking
+### v3 — Reranking — ✅ Completed
 - Retrieve a larger top-k candidate set from Chroma
 - Add a local reranker (e.g. cross-encoder like `bge-reranker` or MiniLM MS MARCO) to reorder candidates by relevance
 - Pass only top reranked chunks to the LLM as context
 - Stays fully local
 
-### v4 — Add memory
-- Session-based conversation tracking (`previous_response_id` or manual history)
+### v4 — Add memory 
+- Session-based conversation tracking
 - Multi-turn context in the UI
+- v4.1 — HyDE hypothetical-answer generation considers recent conversation history, not just the latest question
+- v4.2 — Summarize-and-drop older turns once history exceeds a limit, to bound token cost on long sessions
 
 ### v5 — Add web search fallback
 - If RAG retrieval score is low, trigger `web_search` tool
@@ -147,14 +149,14 @@ To avoid over-scoping, v1 cut everything down to the smallest working loop.
  
 **Ties into v2** widening the initial top-k and reranking against the raw question (not the HyDE embedding) helps recover relevant chunks — including structured/CSV rows, if added later — that HyDE's prose bias may have ranked lower. Reranking fixes ordering/precision within the retrieved pool; it can't recover chunks HyDE excluded entirely, so top-k width still matters.
  
-### v3 Planned Stack
+### v3 Stack
 - Same as v2 — one new dependency: a local cross-encoder reranker (e.g. `cross-encoder/ms-marco-MiniLM-L-6-v2` via `sentence-transformers`, likely already available as it's part of the `sentence-transformers` package)
 - **LLM**: Local model via Ollama (unchanged)
 - **Embeddings**: Local `sentence-transformers/all-mpnet-base-v2` (unchanged)
 - **Reranker**: Local cross-encoder (new)
 - **Vector DB**: Chroma (unchanged)
 
-### v3 Files (Planned)
+### v3 Files
  
 | File | Purpose |
 |---|---|
@@ -162,7 +164,7 @@ To avoid over-scoping, v1 cut everything down to the smallest working loop.
 | `main.py` | Modified — `lifespan` background-loads reranker alongside embedding model; `/chat` retrieves a wider candidate pool, reranks, then builds context from top reranked chunks |
 | `query_db.py` | Modified — add `--rerank` flag to compare raw vs HyDE vs HyDE+rerank retrieval side-by-side |
  
-### v3 Build Steps (Planned)
+### v3 Build Steps
 1. Add `get_reranker()` to `utils.py` — lazy-load a local cross-encoder model, cached after first load (same pattern as `get_embedding_function()`)
 2. Add `rerank_chunks(question, chunks, top_n)` to `utils.py` — scores each (question, chunk) pair with the cross-encoder, sorts descending, returns top `top_n`
 3. Widen initial retrieval: increase `n_results` in the `retrieve_chunks()` call (e.g. top_k=10 candidates) before reranking down to a smaller final set (e.g. top 3)
@@ -170,3 +172,88 @@ To avoid over-scoping, v1 cut everything down to the smallest working loop.
 5. Update `/chat` in `main.py`: HyDE-embed → retrieve wide candidate pool → rerank with raw question → build context from top reranked chunks → final LLM call
 6. Add `--rerank` flag to `query_db.py` to compare raw / HyDE / HyDE+rerank retrieval side-by-side
 7. Test retrieval quality: check whether reranking recovers relevant chunks that HyDE's prose bias ranked lower
+
+---
+
+## v4 — Add Memory — Completed
+
+**What:** Track conversation history per session so follow-up questions have context. Uses manual history (list of messages sent on every call), not `previous_response_id` — that's a Responses API feature and this stack runs on `chat.completions.create` via Ollama, which is stateless per call.
+
+### v4 Stack
+- Same as v3 — no new dependencies (in-memory session store, no DB)
+
+### v4 Files
+
+| File | Purpose |
+|---|---|
+| `utils.py` | Modified — add in-memory `SESSIONS` dict, `get_session_history(session_id)` / `append_to_session(session_id, role, content)` / `clear_session(session_id)` helpers |
+| `main.py` | Modified — `ChatRequest` gains optional `session_id`; generates a new one if absent; builds LLM messages as system prompt + prior history + new question; appends question/answer to session after response; returns `session_id` in response; adds `DELETE /session/{session_id}` endpoint to clear a session's history |
+| `index.html` | Modified — stores `session_id` in a JS variable after first response, sends it on subsequent `/chat` calls; adds a "New Session" button that clears local `session_id` and chat UI, and tells the backend to drop that session's history |
+
+### v4 Build Steps
+1. Add `SESSIONS = {}` to `utils.py` — in-memory dict mapping `session_id` → list of message dicts
+2. Add `get_session_history(session_id)` (using `.get(session_id, [])` so an unknown ID returns empty history instead of erroring), `append_to_session(session_id, role, content)`, and `clear_session(session_id)` helpers to `utils.py`
+3. Update `ChatRequest` in `main.py` to accept optional `session_id`; generate a new UUID if not provided
+4. Update `/chat` in `main.py`: build final LLM call's `messages` as system prompt + full session history + new user question (HyDE/retrieval stay unchanged — based on the latest question only, as in v3)
+5. After getting the answer, append the user question and assistant answer to that session's history
+6. Return `session_id` in the `/chat` response so the frontend can persist and resend it
+7. Add `DELETE /session/{session_id}` endpoint in `main.py` calling `clear_session()`
+8. Update `index.html`: store `session_id` from the first response, include it in the body of subsequent `/chat` POSTs
+9. Add a "New Session" button to `index.html` — on click, calls `DELETE /session/{session_id}` (if one exists), clears the local `session_id` variable, and clears the chat bubble UI
+10. Test multi-turn flow: ask a question, then a follow-up that depends on prior context, confirm the LLM sees history
+11. Test reset: start a session, ask a follow-up, click "New Session", confirm next question gets no prior context and UI is empty
+
+---
+
+## v4.1 — HyDE-Aware History (Planned)
+
+**Design discussion — should HyDE see prior history?**
+
+The open question was whether `generate_hypothetical_answer()` should only take the latest question, or the question plus recent conversation history.
+
+The problem: v4 memory only helps the *final* LLM call — retrieval happens *before* that, via HyDE, and still only sees the latest question in isolation. A follow-up like "What about roses?" gives HyDE nothing to anchor on. HyDE would generate a generic hypothetical about roses in general, missing whatever the conversation was actually about (e.g. vase compatibility, toxicity). Retrieval then queries Chroma with that ungrounded hypothetical and pulls back irrelevant chunks — so the follow-up looks broken at the retrieval step even though memory "works" at the chat-history level.
+
+The fix isn't to hand HyDE the *entire* session history either. Full history adds tokens per call for no real benefit, and older turns can dilute the hypothetical answer with context that's no longer relevant to the current question.
+
+**Decision:** `generate_hypothetical_answer()` takes the latest question plus the last 2 turns of history if available (fewer if the session has less). This keeps HyDE grounded on follow-ups without paying for or diluting on irrelevant older context.
+
+### v4.1 Files (Planned)
+
+| File | Purpose |
+|---|---|
+| `utils.py` | Modified — `generate_hypothetical_answer()` now accepts recent-history turns (latest 2 if available) and includes them in the prompt |
+| `main.py` | Modified — `/chat` passes the latest question + last 2 turns of session history (if available) into `generate_hypothetical_answer()` |
+
+### v4.1 Build Steps (Planned)
+1. Update `generate_hypothetical_answer()` in `utils.py` to accept optional recent-history turns and include them in the prompt to the LLM
+2. Update `/chat` in `main.py`: pass the latest question + last 2 turns of session history (if available) into `generate_hypothetical_answer()`
+3. Test: ask a question, then a follow-up like "what about roses?", confirm HyDE's hypothetical answer reflects the prior turn's context and retrieval pulls relevant chunks
+
+---
+
+## v4.2 — History Trimming (Planned)
+
+**Design discussion — trimming**
+
+The problem: session history has no cap. If someone chats for 50 turns, every `/chat` call sends the *full* history to the LLM — cost and latency creep the longer a conversation runs, even on local Ollama.
+
+**Decision:** summarize-and-drop. Once history exceeds N turns, collapse the older turns into a short LLM-generated summary and keep that summary plus the recent raw turns, instead of sending everything forever. This gives the best context retention of the options considered, at the cost of an extra LLM call and added complexity — arguably overkill for a local Ollama chatbot, but it avoids losing older context entirely the way a hard cutoff would.
+
+To keep the summary itself from growing unbounded as a long session keeps triggering trims, each trim regenerates the summary from scratch rather than appending to it: the old summary plus the newly-dropped turns are fed into the LLM together and replaced with one fresh summary. This keeps the summary roughly the same size no matter how long the session runs, instead of turning into a summary-of-a-summary-of-a-summary that grows forever.
+
+Trimming only ever removes the *oldest* excess turns from `turns`, never the most recent ones — so v4.1's HyDE lookup (last 2 turns) always reads from the untrimmed recent tail and is unaffected by trimming.
+
+### v4.2 Files (Planned)
+
+| File | Purpose |
+|---|---|
+| `utils.py` | Modified — add `HISTORY_TURN_LIMIT` constant and `summarize_history()`; session storage shape changes to `{"summary": str | None, "turns": [...]}`; `append_to_session()` triggers a trim when `turns` exceeds the limit; `get_session_history()` prepends the summary as a system message when one exists |
+| `main.py` | No changes — trimming is internal to `utils.py`'s session helpers |
+
+### v4.2 Build Steps (Planned)
+1. Add `HISTORY_TURN_LIMIT` constant and a summarization system prompt to `utils.py`
+2. Change session storage shape to `{"summary": None, "turns": []}` per session
+3. Add `summarize_history(old_summary, dropped_turns, client, model, system_prompt)` to `utils.py` — feeds the old summary (if any) plus newly-dropped turns into the LLM, returns one fresh summary
+4. Update `append_to_session()` — after appending, if `len(turns) > HISTORY_TURN_LIMIT`, pull the oldest excess turns, call `summarize_history()`, replace `summary`, drop those turns from `turns`
+5. Update `get_session_history()` — return `[{"role": "system", "content": f"Earlier conversation summary: {summary}"}] + turns` when a summary exists, else just `turns`
+6. Test: chat past the turn limit, confirm older turns get summarized and dropped while recent turns and the summary are still passed to the LLM

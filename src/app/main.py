@@ -1,6 +1,8 @@
 import os
+import uuid
 import asyncio
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -10,12 +12,15 @@ from utils import (
     APP_DIR,
     RERANK_CANDIDATES,
     TOP_K,
+    append_to_session,
     build_context,
+    clear_session,
     embed_text,
     generate_hypothetical_answer,
     get_collection,
     get_llm_client,
     get_reranker,
+    get_session_history,
     rerank_chunks,
     retrieve_chunks,
 )
@@ -54,13 +59,16 @@ app = FastAPI(lifespan=lifespan)
 
 class ChatRequest(BaseModel):
     question: str
+    session_id: Optional[str] = None
 
 
 @app.post("/chat")
 def chat(request: ChatRequest):
     collection = get_collection()
     client = get_llm_client(LOCAL_LLM_BASE_URL)
- 
+
+    session_id = request.session_id or str(uuid.uuid4())
+
     hypothetical_answer = generate_hypothetical_answer(
         request.question, client, LOCAL_LLM_MODEL, HYDE_SYSTEM_PROMPT
     )
@@ -75,16 +83,23 @@ def chat(request: ChatRequest):
 
     chunks = rerank_chunks(request.question, candidates, top_n=TOP_K)
     context = build_context(chunks)
- 
-    response = client.chat.completions.create(
-        model=LOCAL_LLM_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+
+    history = get_session_history(session_id)
+
+    messages = (
+        [{"role": "system", "content": SYSTEM_PROMPT}]
+        + history
+        + [
             {
                 "role": "user",
                 "content": f"Context:\n{context}\n\nQuestion: {request.question}",
-            },
-        ],
+            }
+        ]
+    )
+
+    response = client.chat.completions.create(
+        model=LOCAL_LLM_MODEL,
+        messages=messages,
     )
  
     answer = response.choices[0].message.content
@@ -92,8 +107,17 @@ def chat(request: ChatRequest):
         {"source": meta.get("source"), "section": meta.get("section")}
         for _, meta, _ in chunks
     ]
- 
-    return {"answer": answer, "sources": sources}
+
+    append_to_session(session_id, "user", request.question)
+    append_to_session(session_id, "assistant", answer)
+
+    return {"answer": answer, "sources": sources, "session_id": session_id}
+
+
+@app.delete("/session/{session_id}")
+def delete_session(session_id: str):
+    clear_session(session_id)
+    return {"status": "cleared", "session_id": session_id}
 
 
 app.mount("/", StaticFiles(directory=str(APP_DIR / "static"), html=True), name="static")

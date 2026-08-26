@@ -31,7 +31,9 @@ LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL")
 _embedding_fn = None
 _collection = None
 _reranker = None
- 
+SESSIONS = {}
+
+
 def get_embedding_function():
     global _embedding_fn
     if _embedding_fn is None:
@@ -110,3 +112,15 @@ def rerank_chunks(question, chunks, top_n=TOP_K):
  
     reranked = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
     return [chunk for chunk, _ in reranked[:top_n]]
+
+
+def get_session_history(session_id):
+    return SESSIONS.get(session_id, [])
+ 
+ 
+def append_to_session(session_id, role, content):
+    SESSIONS.setdefault(session_id, []).append({"role": role, "content": content})
+ 
+ 
+def clear_session(session_id):
+    SESSIONS.pop(session_id, None)
