@@ -1,4 +1,7 @@
+import json
 import os
+import re
+import traceback
 import uuid
 import asyncio
 from contextlib import asynccontextmanager
@@ -10,8 +13,10 @@ from pydantic import BaseModel
 
 from utils import (
     APP_DIR,
+    RELEVANCE_THRESHOLD,
     RERANK_CANDIDATES,
     TOP_K,
+    WEB_SEARCH_TOOL_SCHEMA,
     append_to_session,
     build_context,
     clear_session,
@@ -24,6 +29,7 @@ from utils import (
     rerank_chunks,
     retrieve_chunks,
     trim_session,
+    web_search,
 )
  
 from dotenv import load_dotenv
@@ -35,8 +41,10 @@ LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL")
 
 SYSTEM_PROMPT = (
     "You are a helpful florist assistant. Answer the user's question using "
-    "ONLY the context provided below. If the context doesn't contain the "
-    "answer, say you don't have that information — do not make anything up."
+    "ONLY the information provided below. If it doesn't contain the answer, "
+    "say you don't have that information — do not make anything up. Answer "
+    "naturally and directly, as if you simply know this — never say things "
+    "like 'according to the context' or 'based on the provided information'."
 )
 
 HYDE_SYSTEM_PROMPT = (
@@ -55,6 +63,24 @@ SUMMARIZE_SYSTEM_PROMPT = (
     "and events that are explicitly stated in the provided text — never "
     "invent or assume details that are not present. Keep it concise — a "
     "few sentences."
+)
+
+WEB_SEARCH_QUERY_SYSTEM_PROMPT = (
+    "The local flower knowledge base has no relevant information for the "
+    "user's question. Call the web_search tool with a concise, well-formed, "
+    "standalone search query that captures what the user is asking — "
+    "rewrite follow-ups (e.g. 'what about roses?') into a self-contained "
+    "query using the conversation so far."
+)
+
+ROUTING_SYSTEM_PROMPT = (
+    "You are only allowed to respond with a single word: YES or NO. "
+    "Decide whether the user's latest message can be answered directly, "
+    "Answer NO by default unless, "
+    "Answer YES if it's a greeting, small talk, a question about who/what the assistant is or can do, thanks."
+    "Answer YES to a follow-up that is fully covered by the history already shown to you. example: 'expand on that'."
+
+    
 )
 
 
@@ -81,6 +107,48 @@ def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
 
     history = get_session_history(session_id)
+
+    routing_messages = (
+        [{"role": "system", "content": ROUTING_SYSTEM_PROMPT}]
+        + history
+        + [{"role": "user", "content": request.question}]
+    )
+    routing_response = client.chat.completions.create(
+        model=LOCAL_LLM_MODEL,
+        messages=routing_messages,
+        temperature=0,
+        max_tokens=2,
+    )
+    routing_decision = (routing_response.choices[0].message.content or "").strip().upper()
+    
+    if routing_decision.startswith("YES"):
+        source = "direct"
+        sources = []
+
+        messages = (
+            [{"role": "system", "content": SYSTEM_PROMPT}]
+            + history
+            + [{"role": "user", "content": request.question}]
+        )
+
+        response = client.chat.completions.create(
+            model=LOCAL_LLM_MODEL,
+            messages=messages,
+        )
+        answer = response.choices[0].message.content
+
+        append_to_session(session_id, "user", request.question)
+        append_to_session(session_id, "assistant", answer)
+
+        trim_session(session_id, client, LOCAL_LLM_MODEL, SUMMARIZE_SYSTEM_PROMPT)
+
+        return {
+            "answer": answer,
+            "sources": sources,
+            "session_id": session_id,
+            "source": source,
+        }
+
     hyde_history = history[-4:]  # last 2 turns (user+assistant each)
 
     hypothetical_answer = generate_hypothetical_answer(
@@ -96,9 +164,56 @@ def chat(request: ChatRequest):
         query_embedding=query_embedding,
     )
 
-    chunks = rerank_chunks(request.question, candidates, top_n=TOP_K)
+    scored_chunks = rerank_chunks(request.question, candidates)
+    relevant_chunks = [
+        chunk for chunk, score in scored_chunks if score >= RELEVANCE_THRESHOLD
+    ][:TOP_K]
 
-    context = build_context(chunks)
+    if relevant_chunks:
+        source = "docs"
+        context = build_context(relevant_chunks)
+        sources = [
+            {"source": meta.get("source"), "section": meta.get("section")}
+            for _, meta, _ in relevant_chunks
+        ]
+    else:
+        source = "web"
+        print("[DEBUG] Relevance threshold not met — falling back to web search")
+
+        try:
+            query_messages = (
+                [{"role": "system", "content": WEB_SEARCH_QUERY_SYSTEM_PROMPT}]
+                + history
+                + [{"role": "user", "content": request.question}]
+            )
+
+            tool_response = client.chat.completions.create(
+                model=LOCAL_LLM_MODEL,
+                messages=query_messages,
+                tools=[WEB_SEARCH_TOOL_SCHEMA],
+                tool_choice="required",
+                temperature=0,
+                max_tokens=30,
+            )
+
+            message = tool_response.choices[0].message
+            if message.tool_calls:
+                search_query = json.loads(message.tool_calls[0].function.arguments)["query"]
+            else:
+                raw = message.content or ""
+                match = re.search(r'"query"\s*:\s*"([^"]+)"', raw)
+                search_query = match.group(1) if match else request.question
+
+            print(f"[DEBUG] search_query = {search_query!r}")
+
+            results = web_search(search_query)
+
+            context = "\n\n".join(f"{r['snippet']} (source: {r['url']})" for r in results)
+            sources = [{"url": r["url"]} for r in results]
+        except Exception:
+            print("[DEBUG] Exception in web-fallback branch:")
+            traceback.print_exc()
+            raise
 
     messages = (
         [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -115,20 +230,20 @@ def chat(request: ChatRequest):
         model=LOCAL_LLM_MODEL,
         messages=messages,
     )
- 
-    answer = response.choices[0].message.content
 
-    sources = [
-        {"source": meta.get("source"), "section": meta.get("section")}
-        for _, meta, _ in chunks
-    ]
+    answer = response.choices[0].message.content
 
     append_to_session(session_id, "user", request.question)
     append_to_session(session_id, "assistant", answer)
 
     trim_session(session_id, client, LOCAL_LLM_MODEL, SUMMARIZE_SYSTEM_PROMPT)
 
-    return {"answer": answer, "sources": sources, "session_id": session_id}
+    return {
+        "answer": answer,
+        "sources": sources,
+        "session_id": session_id,
+        "source": source,
+    }
 
 
 @app.delete("/session/{session_id}")

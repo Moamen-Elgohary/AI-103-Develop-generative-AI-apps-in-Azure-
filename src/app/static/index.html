@@ -53,6 +53,16 @@
       background: #eee;
     }
 
+    .source-tag {
+      display: block;
+      margin-top: 6px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      opacity: 0.55;
+    }
+
     #input-bar {
       width: 100%;
       max-width: 600px;
@@ -115,6 +125,13 @@
         const data = await res.json();
         sessionId = data.session_id;
         thinkingBubble.textContent = data.answer;
+
+        if (data.source === "web" || data.source === "docs") {
+          const tag = document.createElement("span");
+          tag.className = "source-tag";
+          tag.textContent = data.source === "web" ? "from the web" : "from your docs";
+          thinkingBubble.appendChild(tag);
+        }
       } catch (err) {
         thinkingBubble.textContent = "Something went wrong. Please try again.";
       } finally {

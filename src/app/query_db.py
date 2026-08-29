@@ -27,6 +27,11 @@ HYDE_SYSTEM_PROMPT = (
 
 
 def query(collection, question, n_results=3, use_hyde=False, use_rerank=False):
+    """Run one question through retrieval (+ optional HyDE/rerank) and print
+    a compact, threshold-relevant summary. Returns the top normalized rerank
+    score (or None if --rerank wasn't used), so callers can build a
+    cross-question summary for picking RELEVANCE_THRESHOLD.
+    """
     query_embedding = None
 
     if use_hyde:
@@ -35,39 +40,41 @@ def query(collection, question, n_results=3, use_hyde=False, use_rerank=False):
             question, client, LOCAL_LLM_MODEL, HYDE_SYSTEM_PROMPT
         )
         query_embedding = embed_text(hypothetical_answer)
-        print(f"  [HyDE hypothetical answer]: {hypothetical_answer[:200]}...\n")
 
     candidate_n = RERANK_CANDIDATES if use_rerank else n_results
     chunks = retrieve_chunks(
         collection, question, candidate_n, query_embedding=query_embedding
     )
 
-    if use_rerank:
-        print(f"\n  [Candidates before rerank: {len(chunks)}]")
+    if not use_rerank:
+        print(f"\nQ: {question}")
+        if not chunks:
+            print("  (no results)")
+            return None
         for i, (doc, meta, dist) in enumerate(chunks, start=1):
             source = meta.get("source", "unknown")
             section = meta.get("section", "unknown")
-            print(f"    [{i}] source={source} section={section} distance={dist:.4f}")
-            print(f"        {doc[:150]}{'...' if len(doc) > 150 else ''}")
-        chunks = rerank_chunks(question, chunks, top_n=n_results)
-        print(f"\n  [Top {len(chunks)} after rerank]")
+            print(f"  {i}. distance={dist:.4f}  {source} / {section}")
+        return None
 
-    mode_parts = []
-    mode_parts.append("HyDE" if use_hyde else "raw question")
-    if use_rerank:
-        mode_parts.append("rerank")
-    mode = "+".join(mode_parts)
-    print(f"  (mode: {mode})")
+    scored_chunks = rerank_chunks(question, chunks)
 
-    if not chunks:
+    print(f"\nQ: {question}")
+    if not scored_chunks:
         print("  (no results)")
-        return
+        return None
 
-    for i, (doc, meta, dist) in enumerate(chunks, start=1):
+    top_score = scored_chunks[0][1]
+    second_score = scored_chunks[1][1] if len(scored_chunks) > 1 else 0.0
+    gap = top_score - second_score
+
+    print(f"  top={top_score:.4f}  2nd={second_score:.4f}  gap={gap:.4f}")
+    for i, ((doc, meta, dist), score) in enumerate(scored_chunks[:n_results], start=1):
         source = meta.get("source", "unknown")
         section = meta.get("section", "unknown")
-        print(f"  [{i}] source={source} section={section} distance={dist:.4f}")
-        print(f"      {doc[:200]}{'...' if len(doc) > 200 else ''}")
+        print(f"  {i}. score={score:.4f}  {source} / {section}")
+
+    return top_score
 
 
 def main():
@@ -81,8 +88,32 @@ def main():
     args = parser.parse_args()
 
     collection = get_collection()
-    question = input("Ask a question: ")
-    query(collection, question, use_hyde=args.hyde, use_rerank=args.rerank)
+
+    print("Enter questions one at a time. Leave blank (or type 'quit') to stop and see the summary.\n")
+
+    summary = []
+    while True:
+        try:
+            question = input("Ask a question: ").strip()
+        except EOFError:
+            break
+        if not question or question.lower() == "quit":
+            break
+        top_score = query(collection, question, use_hyde=args.hyde, use_rerank=args.rerank)
+        if args.rerank:
+            summary.append((question, top_score))
+
+    if args.rerank and summary:
+        print("\n" + "=" * 60)
+        print("SUMMARY — top score per question, sorted high to low")
+        print("=" * 60)
+        for question, top_score in sorted(summary, key=lambda x: x[1], reverse=True):
+            print(f"  {top_score:.4f}   {question}")
+        print(
+            "\nLook for the natural gap between questions your docs should "
+            "answer and ones they shouldn't — set RELEVANCE_THRESHOLD in "
+            "that gap."
+        )
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import math
 import os
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 from openai import OpenAI
 from sentence_transformers import CrossEncoder
+from duckduckgo_search import DDGS
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -16,6 +18,7 @@ COLLECTION_NAME = "flower_pedia"
 TOP_K = 3
 RERANK_CANDIDATES = 10
 HISTORY_TURN_LIMIT = 10
+RELEVANCE_THRESHOLD = 0.03
 
 EMBEDDING_MODEL_NAME = os.environ.get(
     "EMBEDDING_MODEL_NAME", "sentence-transformers/all-mpnet-base-v2"
@@ -29,10 +32,35 @@ LOCAL_LLM_BASE_URL = os.environ.get("LOCAL_LLM_BASE_URL")
 LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL")
 
 
+WEB_SEARCH_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the live web for information. Use this when the local "
+            "flower knowledge base doesn't contain the answer."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A concise, well-formed search query.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 _embedding_fn = None
 _collection = None
 _reranker = None
 SESSIONS = {}
+
+
+def get_llm_client(base_url):
+    return OpenAI(base_url=base_url, api_key="ollama")
 
 
 def get_embedding_function():
@@ -66,9 +94,6 @@ def get_reranker():
         _reranker = CrossEncoder(RERANKER_MODEL_NAME)
     return _reranker
 
-
-def get_llm_client(base_url):
-    return OpenAI(base_url=base_url, api_key="ollama")
 
 
 def retrieve_chunks(collection, question, n_results=TOP_K, query_embedding=None):
@@ -106,16 +131,27 @@ def generate_hypothetical_answer(question, client, model, system_prompt, history
     return response.choices[0].message.content
 
 
-def rerank_chunks(question, chunks, top_n=TOP_K):
+def rerank_chunks(question, chunks):
     if not chunks:
         return chunks
  
     reranker = get_reranker()
     pairs = [(question, doc) for doc, _, _ in chunks]
-    scores = reranker.predict(pairs)
+    raw_scores = reranker.predict(pairs)
+    normalized_scores = [1 / (1 + math.exp(-s)) for s in raw_scores]
  
-    reranked = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
-    return [chunk for chunk, _ in reranked[:top_n]]
+    reranked = sorted(zip(chunks, normalized_scores), key=lambda x: x[1], reverse=True)
+    return reranked
+
+
+def web_search(query, max_results=3):
+    with DDGS() as ddgs:
+        raw_results = list(ddgs.text(query, max_results=max_results))
+
+    return [
+        {"snippet": r.get("body", ""), "url": r.get("href", "")}
+        for r in raw_results
+    ]
 
 
 def get_session_history(session_id):

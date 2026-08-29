@@ -46,9 +46,12 @@ Ask it things like:
 - v4.1 — HyDE hypothetical-answer generation considers recent conversation history, not just the latest question
 - v4.2 — Summarize-and-drop older turns once history exceeds a limit, to bound token cost on long sessions
 
-### v5 — Add web search fallback
-- If RAG retrieval score is low, trigger `web_search` tool
-- UI shows source: "from your docs" vs "from the web"
+### v5 — Relevance-Gated Retrieval + Web Search Fallback — ✅ Completed
+- Reranker scores are kept and normalized (0-1), instead of discarded after picking top-k
+- Chunks are filtered by a relevance threshold (tuned to `0.03` against ~80 test questions), capped at `TOP_K`
+- If nothing clears the threshold, the LLM is forced (`tool_choice="required"`) to call a `web_search` tool with its own reformulated query, with a text-parsing fallback for local models that don't honor forced tool calls
+- A routing step also catches greetings/small talk/meta questions and history-only follow-ups ("expand on that"), answering directly without docs or web
+- UI shows source: "from your docs" vs "from the web" (no tag for direct answers)
 
 ### v6 — Multi-document management
 - Upload documents via UI (not just pre-loaded files)
@@ -263,3 +266,95 @@ Trimming always keeps the last 4 messages (2 full turns) untouched, since v4.1's
 7. Call `trim_session()` in `main.py`, once per turn, immediately after both `append_to_session()` calls (user question + assistant answer) — guarantees trimming only ever happens at a pair boundary
 8. Tighten `SUMMARIZE_SYSTEM_PROMPT` to forbid inventing facts/names/events not explicitly present in the source turns, after observing hallucinated details compounding across trims
 9. Test: chat past the turn limit, confirm older turns get summarized (accurately, no invented details) and dropped while the last 4 raw turns and the summary are still passed to the LLM and to HyDE
+
+---
+
+## v5 — Relevance-Gated Retrieval with Web Search Fallback — Completed
+
+**What:** v3's reranker always hands the LLM a fixed top-3 chunks, regardless of whether they're actually relevant to the question. v5 makes relevance a measurable, filterable signal — so the number of chunks used reflects real document coverage — and adds a web search fallback for questions local docs don't cover at all. Along the way, testing surfaced a second gap (routing every turn through docs-or-web breaks on greetings and follow-ups), which got folded into this version too.
+
+### Approach
+- Reranker scores every candidate chunk against the question (already happens in v3) — the score is kept instead of discarded
+- Scores are normalized to 0-1 (sigmoid) so the threshold can be tuned by eye
+- Chunks are filtered by `RELEVANCE_THRESHOLD`, capped at `TOP_K` — 0 to 3 chunks depending on actual relevance, not always 3
+- If nothing clears the threshold, a web search is triggered instead of forcing an answer from weak context
+- Each response is tagged `source: "docs"`, `"web"`, or `"direct"` so the frontend can show where the answer came from
+
+**Why the reranker score, not Chroma's raw distance:** Chroma's distance is tied to the embedding model's vector space and has no fixed range — it will also change when v7 swaps embeddings. The reranker score is already computed, question-specific, and reusable for both the chunk-count decision and the fallback trigger — one signal, two uses.
+
+### Threshold tuning — what actually happened
+
+The original plan was to eyeball a threshold from a handful of test questions. In practice this took a larger batch to get right:
+
+1. **First 3 questions** suggested real matches scored ~0.08–0.98 and irrelevant ones scored ~0.0000 — a clean, wide gap.
+2. **A larger batch (~80 questions)** across both docs, deliberately including borderline and out-of-scope cases, confirmed the same pattern held at scale: genuine matches consistently scored well above the confirmed noise floor (`0.0000`) from every out-of-scope test question.
+
+**Decision:** `RELEVANCE_THRESHOLD = 0.03`. This sits below the normal range of true positives and comfortably above the confirmed noise floor. Tuned using `query_db.py` (see below) against ~80 real questions, not the placeholder guess from the original plan.
+
+**Sample results**, spanning the full score range from the tuning run (full set in `questions.txt`):
+
+| Score | Question | Doc |
+|---|---|---|
+| 0.9997 | What's the meaning of a peony? | symbolism |
+| 0.9950 | What does euphorbia sap do to other flowers? | compatibility |
+| 0.9803 | What flowers should I use for a funeral arrangement? | symbolism |
+| 0.9394 | What's the best way to recut flower stems? | compatibility |
+| 0.7927 | How can I make my cut flowers last longer? | compatibility |
+| 0.6878 | What's the meaning behind giving someone a sunflower? | symbolism |
+| 0.4338 | What flowers are toxic to cats? | compatibility |
+| 0.3212 | Which flowers work well as an anchor in a mixed bouquet? | compatibility |
+| 0.1675 | What flowers should I avoid giving for a somber occasion? | symbolism |
+| **0.0944** | Why shouldn't I put roses and carnations in the same vase? | compatibility |
+| **0.0813** | What flowers should I avoid mixing with lilies? | compatibility |
+| — *threshold = 0.03* — | | |
+| 0.0000 | Who won the last World Cup? | *n/a* |
+| 0.0000 | What's the capital of France? | *n/a* |
+| 0.0000 | How do I fix a Python import error? | *n/a* |
+
+### How the web search fallback works
+When nothing clears the threshold, the raw user question isn't searched directly — the LLM is asked to write the search query itself, since it can phrase follow-ups (e.g. "what about roses?") into a proper standalone query.
+
+This uses tool calling: the LLM is given a `web_search` function tool and `tool_choice="required"`, forcing it to use the tool rather than answer directly, with `temperature=0` and `max_tokens=30` since only a short, precise search phrase is needed. The returned query is run through `web_search()` (using `duckduckgo-search`), and the results are formatted as plain context text fed into the same shared final-answer LLM call used by the docs path (see "Simplification" below) — no separate web-only system prompt, no tool-call/tool-result message replay.
+
+Ollama has no hosted search capability, so the model can only *request* a search via a function tool — execution and feeding results back happens in application code. This mirrors the shape a future hosted-tool version (e.g. Azure OpenAI's `{"type": "web_search"}`) would take, so this design doubles as practice for that later swap — only the model and search backend change, not the shape.
+
+**Reliability gap found during testing:** `tool_choice="required"` isn't consistently honored by Ollama's OpenAI-compatible endpoint — `llama3.2:3b` was observed echoing its attempted tool call as malformed JSON text in `content` instead of populating `tool_calls`, crashing the original implementation (`tool_calls[0]` on `None`). Fixed with a fallback: if `message.tool_calls` is empty, regex-scrape a `"query": "..."` pattern out of `content`, falling back to the raw question if even that fails. This keeps the primary path matching Azure's real tool-call shape and only degrades gracefully for local models that don't honor the forced call.
+
+
+### Routing gap found during testing — direct-answer path
+Testing surfaced a case the docs-or-web split didn't handle: a bare follow-up like "expand on that" has no semantic content of its own, so it fails the relevance threshold regardless of whether the docs actually cover the topic, and gets misrouted to web search. The same problem showed up for greetings and meta questions ("hi", "who are you") — especially on the very first turn, with no history to fall back on either.
+
+**Fix:** a third route, checked before HyDE/retrieval run at all. One LLM call (`ROUTING_SYSTEM_PROMPT`, `temperature=0`, `max_tokens=2`) decides YES/NO: can this turn be answered directly from conversation history and general ability, with no new flower knowledge or web search needed? YES routes to a direct answer using the same `SYSTEM_PROMPT` + history, tagged `source = "direct"`, skipping HyDE/retrieval/rerank/web entirely. NO falls through to the existing docs → threshold → web flow, unchanged.
+
+**Known limitation:** `llama3.2:3b` doesn't always follow the "respond with exactly one word" instruction. The prompt went through several rounds of tightening to improve this. Parsing stays conservative regardless: only a response starting with `YES` counts as `YES`; anything else defaults to `NO` and falls through to the normal docs/web flow, so a misfire costs an unnecessary lookup, never a blocked answer. Occasional misroutes on unusual phrasing are still possible. Revisiting with a smaller model dedicated to routing only (e.g. one with stronger structured-output reliability) is a candidate follow-up, not yet done.
+
+### v5 Stack (additions)
+- `duckduckgo-search` for web fallback
+
+### v5 Files
+
+| File | Purpose |
+|---|---|
+| `utils.py` | `rerank_chunks()` returns all scored chunks (normalized 0-1), not just top-n; adds `RELEVANCE_THRESHOLD = 0.03`; adds `WEB_SEARCH_TOOL_SCHEMA`; adds `web_search(query, max_results=3)` using `duckduckgo-search` |
+| `main.py` | Adds a routing step (`ROUTING_SYSTEM_PROMPT`) before HyDE/retrieval, for direct/history-only answers (`source = "direct"`); filters reranked chunks by threshold, capped at `TOP_K`; empty → forced tool call (with text-parsing fallback for local models) → execute search → shared final-answer call; `source` (`"docs"` \| `"web"` \| `"direct"`) added to response |
+| `query_db.py` | Rewritten as a looping CLI tool (reads questions until blank/EOF, so input can be piped from a file) — prints per-question `top`/`2nd`/`gap` scores plus a full end-of-session summary sorted by score, for threshold tuning |
+| `questions.txt` | Combined batch of ~80 test questions (in-scope, borderline, out-of-scope) used to tune `RELEVANCE_THRESHOLD`; pipe into `query_db.py --hyde --rerank < questions.txt` to reproduce |
+| `index.html` | Shows "from your docs" / "from the web" tag per answer bubble; no tag shown for `"direct"` answers |
+
+### v5 Build Steps (as completed)
+1. Sigmoid-normalize reranker scores in `rerank_chunks()`; return all scored chunks, sorted
+2. Add `RELEVANCE_THRESHOLD` constant (placeholder, tuned later)
+3. Define `WEB_SEARCH_TOOL_SCHEMA` (name: `web_search`, param: `query: string`)
+4. Add `duckduckgo-search` dependency; add `web_search(query, max_results=3)` → list of `{snippet, url}`
+5. In `/chat`: filter scored chunks by threshold, cap at `TOP_K`
+6. Chunks found → existing flow, `source = "docs"`
+7. Empty → LLM call with `tools=[WEB_SEARCH_TOOL_SCHEMA]`, `tool_choice="required"`, `temperature=0`, `max_tokens=30`; added a fallback for when `tool_calls` comes back empty (local model reliability issue, see above)
+8. Parse the tool call's (or fallback-parsed) query
+9. Run `web_search(query)`
+10. Format results as plain context text; feed into the same shared final-answer call used by the docs path (simplified from the original tool-call/tool-result message replay plan)
+11. Set `source = "web"`
+12. Rewrite `query_db.py` into a looping, pipeable CLI tool that prints per-question scores and an end-of-session summary
+13. Run ~80 test questions (mixed in-scope, borderline, out-of-scope) through `query_db.py`; tune `RELEVANCE_THRESHOLD` to `0.03` based on the results
+14. Update `index.html` to render the source tag
+15. Add the routing step (`ROUTING_SYSTEM_PROMPT`) for direct/history-only answers, discovered as a necessary addition during testing (see above)
+16. Test: docs path unaffected; no-chunk path triggers forced tool call and falls back gracefully when the local model doesn't honor it; greetings and simple follow-ups route to `"direct"` without hitting docs/web; a real docs question still routes correctly afterward
