@@ -74,13 +74,28 @@ WEB_SEARCH_QUERY_SYSTEM_PROMPT = (
 )
 
 ROUTING_SYSTEM_PROMPT = (
-    "You are only allowed to respond with a single word: YES or NO. "
-    "Decide whether the user's latest message can be answered directly, "
-    "Answer NO by default unless, "
-    "Answer YES if it's a greeting, small talk, a question about who/what the assistant is or can do, thanks."
-    "Answer YES to a follow-up that is fully covered by the history already shown to you. example: 'expand on that'."
+    "You are a routing classifier for a florist assistant. Respond with ONLY "
+    "a JSON object of the exact shape {\"route\": \"...\"} and nothing else — "
+    "no explanation, no markdown, no extra text. The \"route\" value must be "
+    "exactly one of: \"out_of_context\", \"direct\", \"continue\".\n\n"
+    "Definitions:\n"
+    "- \"out_of_context\": the user's latest message is not about flowers or "
+    "floristry at all, and has no reasonable connection to the conversation "
+    "history shown to you (e.g. general trivia, coding help, unrelated "
+    "small talk about other topics).\n"
+    "- \"direct\": the message is a greeting, small talk, a question about "
+    "who/what the assistant is or can do, thanks, or a follow-up that is "
+    "fully answerable from the conversation history already shown to you "
+    "without needing any new flower knowledge (example: 'expand on that').\n"
+    "- \"continue\": the message needs real flower/floristry knowledge to "
+    "answer (facts, recommendations, compatibility, care, symbolism, etc.) "
+    "that isn't already fully covered by the history shown to you.\n\n"
+    "Default to \"continue\" when unsure. Respond with the JSON object only."
+)
 
-    
+OUT_OF_CONTEXT_MESSAGE = (
+    "This is a flower chat bot — I can only help with flower and "
+    "floristry questions."
 )
 
 
@@ -117,11 +132,36 @@ def chat(request: ChatRequest):
         model=LOCAL_LLM_MODEL,
         messages=routing_messages,
         temperature=0,
-        max_tokens=2,
+        max_tokens=20,
     )
-    routing_decision = (routing_response.choices[0].message.content or "").strip().upper()
-    
-    if routing_decision.startswith("YES"):
+    raw_routing_content = routing_response.choices[0].message.content or ""
+
+    route = None
+    try:
+        parsed = json.loads(raw_routing_content)
+        candidate = parsed.get("route")
+        if candidate in ("out_of_context", "direct", "continue"):
+            route = candidate
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    if route is None:
+        match = re.search(r'"route"\s*:\s*"(\w+)"', raw_routing_content)
+        if match and match.group(1) in ("out_of_context", "direct", "continue"):
+            route = match.group(1)
+
+    if route is None:
+        route = "continue"
+
+    if route == "out_of_context":
+        return {
+            "answer": OUT_OF_CONTEXT_MESSAGE,
+            "sources": [],
+            "session_id": session_id,
+            "source": "out_of_context",
+        }
+
+    if route == "direct":
         source = "direct"
         sources = []
 

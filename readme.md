@@ -53,10 +53,15 @@ Ask it things like:
 - A routing step also catches greetings/small talk/meta questions and history-only follow-ups ("expand on that"), answering directly without docs or web
 - UI shows source: "from your docs" vs "from the web" (no tag for direct answers)
 
-### v6 — Multi-document management
-- Upload documents via UI (not just pre-loaded files)
-- Delete/re-index documents
-- Show which document a chunk came from (citations in UI)
+### v5.1 — JSON Routing + `out_of_context` Route — ✅ Completed
+- Routing LLM call switched from a bare YES/NO word to structured JSON output, to reduce misfires where the model answers instead of routing
+- Adds a third route, `out_of_context`, for questions with no flower/floristry relevance — static refusal, no LLM call, no session write, skips HyDE/retrieval/web entirely
+- `direct` and `continue` routes behave the same as v5's `YES`/`NO`
+
+### v6 — Expanded Knowledge Base: MDs + CSV Support
+- Populate the database with more `.md` files covering additional flower/floristry topics
+- Add `.csv` as a second supported file type — `fill_db.py` branches by extension, each row becomes one chunk
+- No changes to retrieval, reranking, or routing — new content flows through the existing pipeline
 
 ### v7 — Cloud LLM & Embeddings swap
 - Swap local LLM → Azure OpenAI (Responses API)
@@ -358,3 +363,41 @@ Testing surfaced a case the docs-or-web split didn't handle: a bare follow-up li
 14. Update `index.html` to render the source tag
 15. Add the routing step (`ROUTING_SYSTEM_PROMPT`) for direct/history-only answers, discovered as a necessary addition during testing (see above)
 16. Test: docs path unaffected; no-chunk path triggers forced tool call and falls back gracefully when the local model doesn't honor it; greetings and simple follow-ups route to `"direct"` without hitting docs/web; a real docs question still routes correctly afterward
+
+---
+
+## v5.1 — JSON Routing + `out_of_context` Route — Completed
+
+**What:** v5's routing step uses a single-word YES/NO prompt, but `llama3.2:3b` doesn't reliably follow "respond with exactly one word" — it sometimes answers the question directly instead of routing it, corrupting the decision. Forcing a JSON response format is a more robust instruction than a bare word for controlling model behavior. Along the way, the binary YES/NO split gets widened to three routes, adding an `out_of_context` short-circuit for questions with no flower/floristry relevance at all — previously these fell through to `NO` and burned a full HyDE → retrieve → rerank → (likely) web-search cycle just to get refused at the end.
+
+### Approach
+- Routing LLM call now returns structured JSON (`{"route": "..."}`) instead of a bare word — a more constrainable output shape than free text
+- Three routes replace the YES/NO split:
+  - `out_of_context` — question isn't flower/floristry-related at all → static refusal, no LLM call, no session write, skips HyDE/retrieval/web entirely
+  - `direct` — answerable from conversation history/general ability, no new flower knowledge needed → unchanged from v5's `YES` path
+  - `continue` — needs real flower knowledge → unchanged from v5's `NO` path, falls through to docs → threshold → web
+
+**Why JSON over a bare word:** a single word gives the model nothing to anchor to structurally — it's easy for a small local model to drift into "helpfully" answering instead. A JSON object with a fixed key gives the model a shape to fill rather than an instruction to remember, which tends to hold up better under weaker instruction-following.
+
+**Why `out_of_context` skips the session entirely:** appending a refused exchange to history would carry it into the summary and into every future prompt for that session — polluting context for zero benefit, since there's nothing about the refusal worth remembering.
+
+### v5.1 Files
+
+| File | Purpose |
+|---|---|
+| `main.py` | `ROUTING_SYSTEM_PROMPT` rewritten for JSON output defining all three routes; routing call `max_tokens` increased (2 → ~20) to fit JSON; parses `route` key with regex fallback and safe default; new `OUT_OF_CONTEXT_MESSAGE` constant; `/chat` branches three ways instead of two — `out_of_context` returns the static message immediately with no LLM call and no `append_to_session()` |
+
+### v5.1 Build Steps
+1. Rewrite `ROUTING_SYSTEM_PROMPT` to instruct JSON-only output: `{"route": "out_of_context" | "direct" | "continue"}`, with each route defined in-prompt
+2. Increase routing call `max_tokens` from 2 to ~20 to accommodate JSON structure
+3. Parse routing response: `json.loads()` first; on failure, regex-scrape `"route"\s*:\s*"(\w+)"`; if still unresolved or value isn't one of the three known routes, default to `continue` (same fail-safe philosophy as v5 — a misfire costs an unnecessary lookup, never blocks a real answer)
+4. Add `OUT_OF_CONTEXT_MESSAGE` constant — static refusal string, e.g. "This is a flower chat bot — I can only help with flower and floristry questions."
+5. Replace the `YES`/`NO` branch in `/chat` with a three-way branch:
+   - `out_of_context` → return `OUT_OF_CONTEXT_MESSAGE` immediately; **no** `append_to_session()` call; no LLM call beyond routing; `source` set to a value the frontend renders with no tag (same as `direct`)
+   - `direct` → unchanged from v5
+   - `continue` → unchanged from v5
+6. Test: off-topic question → static message returned, zero downstream LLM/HyDE/retrieval/web calls made, session history unchanged before/after
+7. Test: follow-up sent immediately after an off-topic question → confirm no leftover artifact affects routing on the next turn
+8. Test: greeting → still routes `direct`
+9. Test: real flower question → still routes `continue`, full pipeline unaffected
+10. Test: force malformed/non-JSON routing output → confirm parser falls back safely to `continue` without crashing
