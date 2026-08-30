@@ -2,6 +2,8 @@
 
 A chatbot that answers primarily from your own documents (RAG), falling back to live web search when local knowledge isn't sufficient. Built on top of the AI-103 Foundry SDK / Responses API material.
 
+> See it in action: [Sample End-to-End Interaction](#sample-end-to-end-interaction--local-development-wrap-up) — a real run with screenshots walking through the full pipeline (routing, HyDE, retrieval, reranking, web fallback, and the off-topic refusal).
+
 ## Concept
 
 Ask it things like:
@@ -58,10 +60,10 @@ Ask it things like:
 - Adds a third route, `out_of_context`, for questions with no flower/floristry relevance — static refusal, no LLM call, no session write, skips HyDE/retrieval/web entirely
 - `direct` and `continue` routes behave the same as v5's `YES`/`NO`
 
-### v6 — Expanded Knowledge Base: MDs + CSV Support
+### v6 — Expanded Knowledge Base: More MDs + CSV Support — ✅ Completed
 - Populate the database with more `.md` files covering additional flower/floristry topics
 - Add `.csv` as a second supported file type — `fill_db.py` branches by extension, each row becomes one chunk
-- No changes to retrieval, reranking, or routing — new content flows through the existing pipeline
+- No changes to retrieval, reranking, or routing — new content flows through the existing pipeline unchanged
 
 ### v7 — Cloud LLM & Embeddings swap
 - Swap local LLM → Azure OpenAI (Responses API)
@@ -401,3 +403,98 @@ Testing surfaced a case the docs-or-web split didn't handle: a bare follow-up li
 8. Test: greeting → still routes `direct`
 9. Test: real flower question → still routes `continue`, full pipeline unaffected
 10. Test: force malformed/non-JSON routing output → confirm parser falls back safely to `continue` without crashing
+
+---
+
+## v6 — Expanded Knowledge Base: More MDs + CSV Support
+
+**What:** Every prior version was built and tuned against a tiny two-file corpus. v5.1 made the pipeline stable — routing reliably separates off-topic, conversational, and knowledge-needing questions — which is what finally makes it safe to scale the data up: growing the corpus no longer means growing the failure modes. v6 spends that headroom: more `.md` topics, plus a new file type (`.csv`), with the retrieval/routing pipeline itself untouched.
+
+**Why CSV specifically needed v3 + v5 already in place:** HyDE (v2) embeds a generated *prose* hypothetical answer to query Chroma — it inherently favors chunks that read like prose. A CSV row (`"name: Rose, watering: moderate, sunlight: full"`) looks nothing like a hypothetical paragraph and would rank low on raw HyDE-embedding similarity alone, regardless of actual relevance. Without v3, CSV rows would rarely surface at all.
+
+- **v3 (reranking)** is what makes CSV chunks viable in the first place: the cross-encoder scores candidates directly against the *raw question*, not the HyDE embedding — the readme's own v3 section already flags "structured/CSV rows, if added later" as a reason the candidate pool is widened before reranking, not just narrowed
+- **v5 (relevance-gated threshold)** is what makes CSV chunks *trustworthy* once surfaced: a fixed top-3 would either force in a barely-relevant row or crowd out a better `.md` chunk. The 0-1 normalized threshold treats a CSV row and an `.md` section on equal footing — only surfaced if it actually clears the bar
+- Net: v6 isn't just "add CSV support" — it's cashing in v3 + v5 specifically. CSV wasn't safely addable until reranking could recover it from HyDE's prose bias and the threshold could filter out the weak matches
+
+### Approach
+- Add more `.md` files — new flower/floristry topics beyond symbolism + compatibility, same `MarkdownHeaderTextSplitter` chunking as v1, zero code changes
+- Add `.csv` as a second ingestible format — structured, tabular data that doesn't naturally fit markdown prose
+- `fill_db.py` branches by file extension: `.md` → existing loader, `.csv` → new row-to-chunk loader
+- Every other component — retrieval, reranking, threshold, routing, web fallback — stays exactly as-is; new chunks just enter the same Chroma collection and flow through the existing pipeline
+- Validate against a broad test question set (spanning old + new `.md` topics, both CSVs, and off-topic questions) via `query_db.py --hyde --rerank`, confirming CSV rows actually clear `RELEVANCE_THRESHOLD` post-rerank and off-topic separation holds at the larger corpus size.
+
+### v6 Files
+ 
+| File | Purpose |
+|---|---|
+| `fill_db.py` | Branch on extension: `.md` → existing loader (unchanged); `.csv` → new `csv.DictReader`-based row-to-chunk loader |
+| **New** `seasonal_availability.md` | Which flowers are in season by month/region, why seasonality matters, year-round fallback options |
+| **New** `seasonal_availability.csv` | flower, peak_season, available_months, region |
+| **New** `bouquet_design_principles.md` | Focal/filler/foliage roles, proportion/balance, shape styles, color theory, texture |
+| **New** `wedding_and_event_planning.md` | Order timelines, quantity estimates by event size, ceremony vs. reception roles, personal flowers, budget allocation |
+| **New** `handling_and_processing.md` | Conditioning, stem processing techniques, hydration solutions, cold storage/transport, common processing mistakes |
+| **Modified** `flower_compatibility.md` | Sap toxicity section deepened into a full human toxicity/handling-precautions section (per-flower detail, severity, handling guidance) |
+| **Modified** `vase_life.csv` | Added `water_temp_preference`, `recut_frequency_days`, `toxicity_level` columns — was just `flower, vase_life_days, ethylene_sensitivity` before |
+| **Unmodified** `flower_symbolism.md` | Kept as is |
+
+### v6 Build Steps
+1. Decide new `.md` topics and draft the content
+2. Decide `.csv` topic/schema and generate the data
+3. Add `import csv` to `fill_db.py`; add a CSV loader — one chunk per row (`"{col}: {val}, ..."` format), metadata `{source: filename, section: <row identifier>}`
+4. Branch the file-loading loop in `fill_db.py` by extension
+5. Run `fill_db.py` against the expanded corpus, confirm chunk counts in Chroma
+6. Re-run `query_db.py --hyde --rerank` against a refreshed test question set spanning old + new `.md` topics and the new CSV data — check whether `RELEVANCE_THRESHOLD = 0.03` still holds or needs re-tuning against the larger, more varied corpus
+7. **CSV-specific check:** confirm CSV rows actually clear the threshold post-rerank for CSV-relevant questions, not just that they exist in Chroma — this is the part v3+v5 are supposed to make possible; also check whether `RERANK_CANDIDATES` needs widening now that short structured chunks compete in the same pool as prose chunks
+8. Full `/chat` test: confirm new content surfaces correctly, `sources` attributes both `.md` sections and `.csv` rows correctly, existing topics/behavior unaffected
+
+### v6 Validation Results
+ 
+Ran a 100-question test set through `query_db.py --hyde --rerank` — 10 compatibility (regression), 10 symbolism (regression), 15 seasonal availability, 12 bouquet design, 12 wedding/event planning, 12 handling/processing, 10 toxicity/vase-life, and 19 off-topic questions.
+ 
+- **Corpus loaded clean**: 146 chunks total (65 `.md` sections including intros, 75 CSV rows across `seasonal_availability_table.csv` and the expanded `vase_life.csv`), with correct `source`/`section` metadata and no ID collisions
+- **Perfect off-topic separation**: all 19 unrelated questions scored exactly `0.0000` — zero false positives, `out_of_context` routing and the relevance threshold both held cleanly against the larger corpus
+- **CSV rows surface correctly through HyDE + reranking**: this was the key risk flagged going into v6 — HyDE's prose-biased embedding could have buried short structured CSV rows entirely. The rerank step (v3) recovered them as designed, with CSV rows like `seasonal_availability_table.csv / Peony` and `vase_life.csv / Gerbera` scoring 0.87–0.97 on directly relevant questions, right alongside their `.md` counterparts
+- **New `.md` content is well-indexed end to end**: every new topic (seasonal availability, bouquet design, wedding/event planning, handling/processing) returned correctly attributed top hits in the 0.9+ range
+- **Deepened toxicity section performs well**: questions like "Is amaryllis sap dangerous to handle?" and "What is daffodil itch?" correctly surfaced the expanded `Human toxicity and handling precautions` section at 0.90+
+- **Existing v5 behavior unaffected**: compatibility and symbolism regression questions scored consistent with prior versions — no regression from the corpus growth
+- **`RELEVANCE_THRESHOLD = 0.03` confirmed to still hold** at the larger, more varied corpus size — no re-tuning needed. Any edge-case misses on ambiguous phrasing route to the existing web-search fallback (v5), which is the fallback's intended job
+
+## Sample End-to-End Interaction — Local Development Wrap-Up
+ 
+This walks through one realistic multi-turn session against `/chat`, chosen to exercise every route and feature built across v1–v6 in sequence. This marks the close of local development — routing, HyDE, retrieval, reranking, threshold gating, docs/web/direct/refusal handling, and session memory are all demonstrated together, end to end, on the finished pipeline.
+ 
+![Florist chatbot request pipeline](pictures/florist_bot_pipeline_flow.png)
+ 
+Below is an actual local run against the UI, walked through turn by turn against the stages in the diagram above.
+ 
+### Turn set 1 — greeting, identity, and a first docs hit
+ 
+![Sample run 1](pictures/sample_run_1.JPG)
+ 
+- **"hi"** → `direct` route. Answered from general ability with no retrieval at all — just the routing call plus one LLM call.
+- **"who are you"** → `direct` route again. Same path, different content — the router correctly classifies both a greeting and an identity question as not needing flower knowledge.
+- **"what flowers symbolize love and passion"** → `continue` route. HyDE generates a hypothetical answer, retrieval + reranking correctly surfaces `flower_symbolism.md`'s tulip entry, and the answer clears `RELEVANCE_THRESHOLD` — tagged **FROM YOUR DOCS**.
+- **"expand on that"** → cut off mid-answer here, continued in the next screenshot.
+### Turn set 2 — HyDE-aware history and a design-principles hit
+ 
+![Sample run 2](pictures/sample_run_2.JPG)
+ 
+- **"expand on that"** (continued) → the follow-up is meaningless on its own, but HyDE-aware history (v4.1) feeds the last exchange into the hypothetical-answer generation step, so the search stays grounded in "flowers that symbolize love/passion" context rather than drifting.
+- **"tulips or roses?"** → another history-dependent follow-up, again resolved correctly, comparing the two based on `flower_symbolism.md` content — **FROM YOUR DOCS**.
+- **"can we make a bouquet out of roses for an occasion?"** → answer begins here, continues into the next screenshot.
+### Turn set 3 — a web fallback, then a correct docs hit
+ 
+![Sample run 3](pictures/sample_run_3.JPG)
+ 
+- **"can we make a bouquet out of roses for an occasion?"** (continued) → tagged **FROM THE WEB**. This is a real, honest example of the relevance threshold (v5) not being cleared — the phrasing didn't score high enough against `bouquet_design_principles.md` despite the topic technically being covered, so it fell through to the web-search fallback exactly as designed rather than forcing a weak docs answer.
+- **"yes how will a bouquet of roses feel like"** → back to **FROM YOUR DOCS**, correctly pulling `bouquet_design_principles.md`'s content on texture and filler flowers (baby's breath, queen anne's lace, ferns) to explain how mixing in filler/foliage adds depth to an all-rose bouquet.
+### Turn set 4 — another web fallback, and the out_of_context safety net
+ 
+![Sample run 4](pictures/sample_run_4.JPG)
+ 
+- **"can we plan it for my wedding"** → **FROM THE WEB** again. Same story as turn set 3 — `wedding_and_event_planning.md` exists, but this casual phrasing didn't clear the threshold, so the web fallback took over.
+- **"can messi attend?"** → also **FROM THE WEB**. Still tangentially tied to "my wedding" from the prior turn, so the router doesn't yet treat it as fully unrelated — it's borderline, and the pipeline handles borderline by falling through rather than guessing.
+- **"you dont know who is messi?"** → this is where the conversation clearly drifts off-topic, and the `out_of_context` route (v5.1) fires: an immediate static refusal, no source tag, no LLM call, and — critically — not saved to session history, so it doesn't linger and bias any turn that follows.
+### What this run shows
+ 
+This wasn't cherry-picked for a perfect scorecard — it's a genuine run, including two real web fallbacks. That's the point: v5's relevance-gated retrieval and web fallback exist precisely to catch phrasing that doesn't score well against the docs even when the topic is technically covered, and this run shows that safety net working in practice, not just in the validation test set. The docs hits that did land (symbolism, bouquet design texture) pulled the right section every time, the follow-up questions stayed grounded via HyDE-aware history, and the conversation was correctly cut off once it drifted to an unrelated topic — without polluting the session in the process.

@@ -18,11 +18,24 @@ Ethylene is a natural plant hormone that speeds up aging — it causes wilting, 
 
 ## Sap toxicity
 
-Some flowers release a thick, sometimes toxic, sap or slime when their stems are cut. This sap can clog the water-uptake tubes (xylem) of other flowers in the same vase, causing them to wilt even if they were otherwise fresh. Some saps are also irritating to skin.
+Some flowers release a thick, sometimes toxic, sap or slime when their stems are cut. This sap can clog the water-uptake tubes (xylem) of other flowers in the same vase, causing them to wilt even if they were otherwise fresh. Some saps are also irritating to skin, eyes, or if ingested.
 
 - **Sap/mucilage-releasing flowers**: daffodils/narcissus, hyacinths, tulips (mild mucilage), amaryllis, poppies, euphorbia-family stems
-- **Toxic to handle**: amaryllis and daffodil sap can irritate skin; poppy sap is a mild irritant — wear gloves when processing large quantities
 - **Best practice**: keep sap-releasing flowers in a "monobouquet" (their own vase) or let them sit alone in water for a few hours after cutting before combining with other flowers, to let the sap dissipate. Rinse stem ends before adding to a mixed arrangement.
+
+## Human toxicity and handling precautions
+
+Toxicity varies significantly by flower, ranging from mild skin irritation to genuine ingestion risk. This is separate from pairing/vase-life concerns above — it's about safe handling for the florist and safe placement for customers with children or pets in the home.
+
+- **Daffodil/narcissus**: sap contains calcium oxalate crystals and alkaloids; can cause skin irritation ("daffodil itch," a mild contact dermatitis common among florists who handle large volumes) and is toxic if ingested (nausea, vomiting). Bulbs are more toxic than cut stems.
+- **Amaryllis**: sap and bulb contain lycorine, which can irritate skin and is toxic if ingested, causing nausea and vomiting. Bulbs are significantly more concentrated than cut stems.
+- **Poppy**: sap is a mild skin irritant; ornamental poppy stems (not opium poppy) pose low ingestion risk in typical floristry handling, but gloves are still recommended when processing large quantities.
+- **Euphorbia family** (including poinsettia): sap is a moderate-to-significant skin and eye irritant; contact with eyes should be flushed immediately with water. Wear gloves and avoid touching the face when processing.
+- **Hyacinth**: bulb and sap can cause skin irritation similar to daffodil; cut-stem handling risk is generally lower than bulb handling.
+- **Lily (true lilies, Lilium species)**: pollen can stain fabric and skin; not significantly toxic to humans via skin contact, but highly toxic to cats if ingested (all plant parts, including pollen and vase water) — worth flagging to customers with cats even though this file focuses on human handling.
+- **Tulip**: mild mucilage can cause minor skin irritation in sensitive individuals or with prolonged, repeated bulb handling ("tulip fingers," an occupational dermatitis); cut-stem handling is low-risk for most people.
+
+**General precautions**: wear gloves when processing large volumes of sap-releasing flowers, especially euphorbia, amaryllis, and daffodil; avoid touching eyes or face while working; wash hands after handling; keep cut flowers and vase water away from small children and pets who may chew on stems or drink vase water, regardless of species, as a general safety habit rather than only for known-toxic flowers.
 
 ## Water needs
 

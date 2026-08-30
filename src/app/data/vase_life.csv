@@ -1,37 +1,37 @@
-flower,vase_life_days,ethylene_sensitivity
-Rose,4-12,Moderate
-Carnation,6-14+,Extreme
-Lily (Asiatic/Oriental),7-14,Unknown/moderate
-Tulip,5-7,Low
-Chrysanthemum,7-14+,None
-Gerbera,4-14,None
-Orchid (Cymbidium),7-28,Moderate/extreme
-Orchid (Phalaenopsis),20-30,Moderate/extreme
-Anemone,3-8,Extreme
-Ranunculus,3-7,Moderate
-Peony,5-10,Unknown
-Delphinium,4-12,Extreme
-Dahlia,4-10,Extreme
-Baby's Breath,5-10+,Extreme
-Daffodil/Narcissus,4-6,Moderate (plus sap risk)
-Hyacinth,4-8,Low (plus sap risk)
-Gardenia,1-3,Moderate
-Freesia,4-12,Moderate
-Sunflower,6-12,Low
-Daisy (Shasta),7-10,Low
-Iris,3-7,Low
-Lavender (cut),7-14,Low
-Alstroemeria,10-14,Low
-Snapdragon,6-12,Moderate
-Marigold,7-10,Low
-Forget-me-not,5-7,Low
-Violet,3-5,Low
-Gladiolus,6-10,Moderate
-Lisianthus,10-14,Low
-Calla Lily,7-14,Low
-Statice,10-14+ (dries well),Very low
-Protea,10-20,Very low
-Amaryllis,7-14,Low (plus sap risk)
-Poppy,3-5,Low (plus sap risk)
-Stock,6-10,Moderate
-Bird of Paradise,14-21,Low
+flower,vase_life_days,ethylene_sensitivity,water_temp_preference,recut_frequency_days,toxicity_level
+Rose,4-12,Moderate,Cool,2,None
+Carnation,6-14+,Extreme,Cool,3,None
+Lily (Asiatic/Oriental),7-14,Unknown/moderate,Cool,2,Low (toxic to cats)
+Tulip,5-7,Low,Cool,2,Low (mild sap irritant)
+Chrysanthemum,7-14+,None,Cool,3,None
+Gerbera,4-14,None,Shallow/cool,2,None
+Orchid (Cymbidium),7-28,Moderate/extreme,Cool,4,None
+Orchid (Phalaenopsis),20-30,Moderate/extreme,Cool,4,None
+Anemone,3-8,Extreme,Cool,2,None
+Ranunculus,3-7,Moderate,Cool,2,None
+Peony,5-10,Unknown,Cool,2,None
+Delphinium,4-12,Extreme,Cool,2,None
+Dahlia,4-10,Extreme,Cool,2,None
+Baby's Breath,5-10+,Extreme,Cool,3,None
+Daffodil/Narcissus,4-6,Moderate (plus sap risk),Cool,2,Moderate (sap irritant, toxic if ingested)
+Hyacinth,4-8,Low (plus sap risk),Lukewarm,2,Moderate (sap irritant)
+Gardenia,1-3,Moderate,Cool,1,None
+Freesia,4-12,Moderate,Cool,2,None
+Sunflower,6-12,Low,Cool,3,None
+Daisy (Shasta),7-10,Low,Cool,3,None
+Iris,3-7,Low,Cool,2,None
+Lavender (cut),7-14,Low,Cool,3,None
+Alstroemeria,10-14,Low,Cool,3,Low (mild skin irritant)
+Snapdragon,6-12,Moderate,Cool,2,None
+Marigold,7-10,Low,Cool,3,None
+Forget-me-not,5-7,Low,Cool,2,None
+Violet,3-5,Low,Cool,2,None
+Gladiolus,6-10,Moderate,Cool,3,None
+Lisianthus,10-14,Low,Cool,3,None
+Calla Lily,7-14,Low,Cool,2,Low (mild sap irritant)
+Statice,10-14+ (dries well),Very low,Cool,4,None
+Protea,10-20,Very low,Cool,4,None
+Amaryllis,7-14,Low (plus sap risk),Lukewarm,2,Moderate (sap/bulb irritant, toxic if ingested)
+Poppy,3-5,Low (plus sap risk),Cool,1,Low (mild sap irritant)
+Stock,6-10,Moderate,Cool,2,None
+Bird of Paradise,14-21,Low,Cool,4,None
